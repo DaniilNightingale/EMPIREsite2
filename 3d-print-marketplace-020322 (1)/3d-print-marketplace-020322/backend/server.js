@@ -1207,15 +1207,3 @@ app.use((err, req, res, next) => {
   logger.error('全局错误:', err.message);
   res.status(500).json({ error: '服务器内部错误' });
 });
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  logger.info(`服务器启动成功，端口: ${PORT}`);
-});
-mongoose.connection.on('connected', () => {
-  logger.info('MongoDB 连接成功');
-});
-
-mongoose.connection.on('error', (err) => {
-  logger.error('MongoDB 连接错误:', err);
-});
