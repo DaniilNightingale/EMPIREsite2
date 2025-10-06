@@ -12,6 +12,7 @@ require('dotenv').config();
 
 const app = express();
 
+
 // 日志配置
 const logger = winston.createLogger({
   level: 'info',
@@ -1210,4 +1211,11 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   logger.info(`服务器启动成功，端口: ${PORT}`);
+});
+mongoose.connection.on('connected', () => {
+  logger.info('MongoDB 连接成功');
+});
+
+mongoose.connection.on('error', (err) => {
+  logger.error('MongoDB 连接错误:', err);
 });
