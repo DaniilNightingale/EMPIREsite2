@@ -1,5 +1,5 @@
 const express = require('express');
-const mongoose = require('mongoose');
+const { Sequelize, DataTypes, Op } = require('sequelize');
 const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
@@ -11,7 +11,6 @@ const bcrypt = require('bcrypt');
 require('dotenv').config();
 
 const app = express();
-
 
 // 日志配置
 const logger = winston.createLogger({
@@ -45,115 +44,7 @@ const distDir = path.resolve(__dirname, '../frontend/dist');
 const publicPath = fs.existsSync(publicDir) ? publicDir : distDir;
 app.use(express.static(publicPath));
 
-// MongoDB 连接
-mongoose.connect(process.env.MONGODB_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-});
-
-mongoose.connection.on('connected', () => {
-  logger.info('MongoDB 连接成功');
-});
-
-mongoose.connection.on('error', (err) => {
-  logger.error('MongoDB 连接错误:', err);
-});
-
-// MongoDB 数据模型
-const userSchema = new mongoose.Schema({
-  username: { type: String, required: true, unique: true },
-  password: { type: String, required: true },
-  role: { type: String, default: 'buyer', enum: ['buyer', 'executor', 'admin'] },
-  avatar: String,
-  city: String,
-  birthday: String,
-  notes: String,
-  registration_date: { type: Date, default: Date.now },
-  initial_username: String,
-  updated_date: { type: Date, default: Date.now }
-});
-
-const productSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  related_name: String,
-  description: String,
-  original_height: Number,
-  original_width: Number,
-  original_length: Number,
-  parts_count: { type: Number, default: 1 },
-  main_image: String,
-  additional_images: [String],
-  price_options: mongoose.Schema.Types.Mixed,
-  is_visible: { type: Boolean, default: true },
-  sales_count: { type: Number, default: 0 },
-  favorites_count: { type: Number, default: 0 },
-  created_date: { type: Date, default: Date.now },
-  updated_date: { type: Date, default: Date.now }
-});
-
-const orderSchema = new mongoose.Schema({
-  user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  products: mongoose.Schema.Types.Mixed,
-  total_price: Number,
-  status: { type: String, default: 'создан заказ' },
-  notes: String,
-  admin_notes: String,
-  assigned_executors: [String],
-  created_date: { type: Date, default: Date.now },
-  updated_date: { type: Date, default: Date.now }
-});
-
-const customRequestSchema = new mongoose.Schema({
-  user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  product_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
-  product_name: String,
-  model_links: [String],
-  additional_name: String,
-  required_heights: [String],
-  images: [String],
-  status: { type: String, default: 'в обработке' },
-  admin_notes: String,
-  created_date: { type: Date, default: Date.now },
-  updated_date: { type: Date, default: Date.now }
-});
-
-const chatMessageSchema = new mongoose.Schema({
-  from_user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  to_user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  message: String,
-  created_date: { type: Date, default: Date.now }
-});
-
-const settingsSchema = new mongoose.Schema({
-  payment_info: String,
-  price_coefficient: { type: Number, default: 5.25 },
-  discount_rules: mongoose.Schema.Types.Mixed,
-  show_discount_on_products: { type: Boolean, default: false }
-});
-
-const userFavoriteSchema = new mongoose.Schema({
-  user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  product_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
-  created_date: { type: Date, default: Date.now }
-});
-
-const portfolioSchema = new mongoose.Schema({
-  user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  image_path: String,
-  created_date: { type: Date, default: Date.now }
-});
-
-// 创建模型
-const User = mongoose.model('User', userSchema);
-const Product = mongoose.model('Product', productSchema);
-const Order = mongoose.model('Order', orderSchema);
-const CustomRequest = mongoose.model('CustomRequest', customRequestSchema);
-const ChatMessage = mongoose.model('ChatMessage', chatMessageSchema);
-const Settings = mongoose.model('Settings', settingsSchema);
-const UserFavorite = mongoose.model('UserFavorite', userFavoriteSchema);
-const Portfolio = mongoose.model('Portfolio', portfolioSchema);
-
-// 文件上传配置 (保持不变)
+// 文件上传配置
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const uploadDir = path.join(publicPath, 'uploads');
@@ -206,6 +97,7 @@ const avatarUpload = multer({
   }
 });
 
+// 作品集上传配置
 const portfolioStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     const portfolioDir = path.join(publicPath, 'uploads', 'portfolio');
@@ -233,35 +125,329 @@ const portfolioUpload = multer({
   }
 });
 
+// PostgreSQL 数据库连接配置
+const sequelize = new Sequelize(
+  process.env.DB_NAME || 'marketplace',
+  process.env.DB_USER || 'postgres',
+  process.env.DB_PASSWORD || 'password',
+  {
+    host: process.env.DB_HOST || 'localhost',
+    port: process.env.DB_PORT || 5432,
+    dialect: 'postgres',
+    logging: false,
+    pool: {
+      max: 5,
+      min: 0,
+      acquire: 30000,
+      idle: 10000
+    },
+    define: {
+      freezeTableName: true,
+      timestamps: true
+    }
+  }
+);
+
+// 定义数据模型
+const User = sequelize.define('User', {
+  id: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    autoIncrement: true
+  },
+  username: {
+    type: DataTypes.STRING,
+    allowNull: false,
+    unique: true,
+    validate: {
+      notEmpty: true,
+      len: [3, 50]
+    }
+  },
+  password: {
+    type: DataTypes.STRING,
+    allowNull: false,
+    validate: {
+      notEmpty: true,
+      len: [6, 255]
+    }
+  },
+  role: {
+    type: DataTypes.STRING,
+    defaultValue: 'buyer',
+    validate: {
+      isIn: [['buyer', 'executor', 'admin']]
+    }
+  },
+  avatar: DataTypes.TEXT,
+  city: DataTypes.STRING,
+  birthday: DataTypes.STRING,
+  notes: DataTypes.TEXT,
+  initial_username: DataTypes.STRING
+}, {
+  tableName: 'users',
+  timestamps: true,
+  createdAt: 'registration_date',
+  updatedAt: 'updated_date'
+});
+
+const Product = sequelize.define('Product', {
+  id: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    autoIncrement: true
+  },
+  name: {
+    type: DataTypes.STRING,
+    allowNull: false,
+    validate: {
+      notEmpty: true,
+      len: [1, 255]
+    }
+  },
+  related_name: DataTypes.STRING,
+  description: DataTypes.TEXT,
+  original_height: DataTypes.FLOAT,
+  original_width: DataTypes.FLOAT,
+  original_length: DataTypes.FLOAT,
+  parts_count: {
+    type: DataTypes.INTEGER,
+    defaultValue: 1,
+    validate: {
+      min: 1
+    }
+  },
+  main_image: DataTypes.TEXT,
+  additional_images: DataTypes.TEXT,
+  price_options: {
+    type: DataTypes.TEXT,
+    allowNull: false,
+    validate: {
+      notEmpty: true
+    }
+  },
+  is_visible: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: true
+  },
+  sales_count: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0
+  },
+  favorites_count: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0
+  }
+}, {
+  tableName: 'products',
+  timestamps: true,
+  createdAt: 'created_date',
+  updatedAt: 'updated_date'
+});
+
+const Order = sequelize.define('Order', {
+  id: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    autoIncrement: true
+  },
+  user_id: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    references: {
+      model: User,
+      key: 'id'
+    }
+  },
+  products: DataTypes.TEXT,
+  total_price: DataTypes.FLOAT,
+  status: {
+    type: DataTypes.STRING,
+    defaultValue: 'создан заказ'
+  },
+  notes: DataTypes.TEXT,
+  admin_notes: DataTypes.TEXT,
+  assigned_executors: DataTypes.TEXT
+}, {
+  tableName: 'orders',
+  timestamps: true,
+  createdAt: 'created_date',
+  updatedAt: 'updated_date'
+});
+
+const CustomRequest = sequelize.define('CustomRequest', {
+  id: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    autoIncrement: true
+  },
+  user_id: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    references: {
+      model: User,
+      key: 'id'
+    }
+  },
+  product_id: DataTypes.INTEGER,
+  product_name: DataTypes.STRING,
+  model_links: DataTypes.TEXT,
+  additional_name: DataTypes.STRING,
+  required_heights: DataTypes.TEXT,
+  images: DataTypes.TEXT,
+  status: {
+    type: DataTypes.STRING,
+    defaultValue: 'в обработке'
+  },
+  admin_notes: DataTypes.TEXT
+}, {
+  tableName: 'custom_requests',
+  timestamps: true,
+  createdAt: 'created_date',
+  updatedAt: 'updated_date'
+});
+
+const ChatMessage = sequelize.define('ChatMessage', {
+  id: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    autoIncrement: true
+  },
+  from_user_id: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    references: {
+      model: User,
+      key: 'id'
+    }
+  },
+  to_user_id: {
+    type: DataTypes.INTEGER,  
+    allowNull: false,
+    references: {
+      model: User,
+      key: 'id'
+    }
+  },
+  message: DataTypes.TEXT
+}, {
+  tableName: 'chat_messages',
+  timestamps: true,
+  createdAt: 'created_date',
+  updatedAt: false
+});
+
+const Settings = sequelize.define('Settings', {
+  id: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    autoIncrement: true
+  },
+  payment_info: DataTypes.TEXT,
+  price_coefficient: {
+    type: DataTypes.FLOAT,
+    defaultValue: 5.25
+  },
+  discount_rules: DataTypes.TEXT,
+  show_discount_on_products: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: false
+  }
+}, {
+  tableName: 'settings',
+  timestamps: false
+});
+
+const UserFavorite = sequelize.define('UserFavorite', {
+  id: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    autoIncrement: true
+  },
+  user_id: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    references: {
+      model: User,
+      key: 'id'
+    }
+  },
+  product_id: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    references: {
+      model: Product,
+      key: 'id'
+    }
+  }
+}, {
+  tableName: 'user_favorites',
+  timestamps: true,
+  createdAt: 'created_date',
+  updatedAt: false
+});
+
+const Portfolio = sequelize.define('Portfolio', {
+  id: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    autoIncrement: true
+  },
+  user_id: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    references: {
+      model: User,
+      key: 'id'
+    }
+  },
+  image_path: DataTypes.TEXT
+}, {
+  tableName: 'portfolio',
+  timestamps: true,
+  createdAt: 'created_date',
+  updatedAt: false
+});
+
+// 设置模型关联
+User.hasMany(Order, { foreignKey: 'user_id' });
+Order.belongsTo(User, { foreignKey: 'user_id' });
+
+User.hasMany(CustomRequest, { foreignKey: 'user_id' });
+CustomRequest.belongsTo(User, { foreignKey: 'user_id' });
+
+User.hasMany(ChatMessage, { foreignKey: 'from_user_id', as: 'SentMessages' });
+User.hasMany(ChatMessage, { foreignKey: 'to_user_id', as: 'ReceivedMessages' });
+ChatMessage.belongsTo(User, { foreignKey: 'from_user_id', as: 'FromUser' });
+ChatMessage.belongsTo(User, { foreignKey: 'to_user_id', as: 'ToUser' });
+
+User.hasMany(UserFavorite, { foreignKey: 'user_id' });
+Product.hasMany(UserFavorite, { foreignKey: 'product_id' });
+UserFavorite.belongsTo(User, { foreignKey: 'user_id' });
+UserFavorite.belongsTo(Product, { foreignKey: 'product_id' });
+
+User.hasMany(Portfolio, { foreignKey: 'user_id' });
+Portfolio.belongsTo(User, { foreignKey: 'user_id' });
+
 // 数据库初始化函数
 async function initDatabase() {
   try {
-    // 检查默认设置
+    await sequelize.authenticate();
+    logger.info('数据库连接成功');
+    
+    await sequelize.sync({ alter: false });
+    logger.info('数据库表结构检查完成');
+
     const settingsExists = await Settings.findOne();
     if (!settingsExists) {
       await Settings.create({
         payment_info: 'Реквизиты для оплаты:\nБанковская карта: 1234 5678 9012 3456\nЯндекс.Деньги: 410011234567890\nQIWI: +79001234567',
         price_coefficient: 5.25,
-        discount_rules: [],
+        discount_rules: '[]',
         show_discount_on_products: false
       });
       logger.info('默认系统设置创建完成');
     }
-    
-    // 检查管理员用户
-    const adminExists = await User.findOne({ role: 'admin' });
-    if (!adminExists) {
-      const hashedPassword = bcrypt.hashSync('admin', 10);
-      await User.create({
-        username: 'admin',
-        password: hashedPassword,
-        role: 'admin',
-        initial_username: 'admin'
-      });
-      logger.info('默认管理员用户创建完成');
-    }
-    
-    logger.info('数据库初始化完成');
   } catch (error) {
     logger.error('数据库初始化错误:', error.message);
   }
@@ -270,13 +456,14 @@ async function initDatabase() {
 // 初始化数据库
 initDatabase();
 
-// ==================== API 路由 ====================
-
 // API路由 - 用户管理
 app.get('/api/users', async (req, res) => {
   try {
-    const users = await User.find({}, { password: 0 })
-      .sort({ registration_date: -1 });
+    const users = await User.findAll({
+      attributes: { exclude: ['password'] },
+      order: [['registration_date', 'DESC']],
+      raw: true
+    });
     
     logger.info(`获取用户列表: ${users.length} 条记录`);
     res.json(users);
@@ -289,25 +476,27 @@ app.get('/api/users', async (req, res) => {
 app.get('/api/admin/users', async (req, res) => {
   try {
     const { search, role_filter } = req.query;
-    let query = {};
+    let whereClause = {};
     
     if (search) {
-      query.$or = [
-        { username: { $regex: search, $options: 'i' } }
-      ];
-      
-      // 如果search是数字，也搜索ID
-      if (!isNaN(search)) {
-        query.$or.push({ _id: search });
-      }
+      whereClause = {
+        [Op.or]: [
+          { id: { [Op.eq]: search } },
+          { username: { [Op.iLike]: `%${search}%` } }
+        ]
+      };
     }
     
     if (role_filter) {
-      query.role = role_filter;
+      whereClause.role = role_filter;
     }
 
-    const users = await User.find(query, { password: 0 })
-      .sort({ registration_date: -1 });
+    const users = await User.findAll({
+      where: whereClause,
+      attributes: { exclude: ['password'] },
+      order: [['registration_date', 'DESC']],
+      raw: true
+    });
     
     logger.info(`管理员获取用户列表: ${users.length} 条记录`);
     res.json(users);
@@ -317,30 +506,33 @@ app.get('/api/admin/users', async (req, res) => {
   }
 });
 
-// 用户资料更新
+// 修复用户资料更新
 app.put('/api/users/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const updateData = { ...req.body, updated_date: new Date() };
+    const updateData = req.body;
     
     // 移除不应更新的字段
-    delete updateData._id;
+    delete updateData.id;
     delete updateData.registration_date;
+    delete updateData.updated_date;
     
     // 如果有密码字段，进行加密
     if (updateData.password) {
       updateData.password = bcrypt.hashSync(updateData.password, 10);
     }
     
-    const updatedUser = await User.findByIdAndUpdate(
-      id, 
-      updateData, 
-      { new: true, select: '-password' }
-    );
+    const [updatedRowsCount] = await User.update(updateData, {
+      where: { id: parseInt(id) }
+    });
     
-    if (!updatedUser) {
+    if (updatedRowsCount === 0) {
       return res.status(404).json({ error: 'Пользователь не найден' });
     }
+    
+    const updatedUser = await User.findByPk(id, {
+      attributes: { exclude: ['password'] }
+    });
     
     logger.info(`用户资料更新成功: ID ${id}`);
     res.json(updatedUser);
@@ -350,22 +542,23 @@ app.put('/api/users/:id', async (req, res) => {
   }
 });
 
-// 用户删除
+// 修复用户删除
 app.delete('/api/users/:id', async (req, res) => {
   try {
     const { id } = req.params;
     
-    const user = await User.findById(id);
-    if (!user) {
-      return res.status(404).json({ error: 'Пользователь не найден' });
-    }
-    
     // 防止删除管理员账户
-    if (user.role === 'admin') {
+    if (parseInt(id) === 1) {
       return res.status(403).json({ error: 'Невозможно удалить администратора' });
     }
     
-    await User.findByIdAndDelete(id);
+    const deletedRowsCount = await User.destroy({
+      where: { id: parseInt(id) }
+    });
+    
+    if (deletedRowsCount === 0) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
     
     logger.info(`用户删除成功: ID ${id}`);
     res.json({ message: 'Пользователь успешно удален' });
@@ -375,7 +568,7 @@ app.delete('/api/users/:id', async (req, res) => {
   }
 });
 
-// 头像上传
+// API路由 - 头像上传修复
 app.post('/api/upload/avatar', avatarUpload.single('avatar'), async (req, res) => {
   try {
     const { user_id } = req.body;
@@ -390,13 +583,13 @@ app.post('/api/upload/avatar', avatarUpload.single('avatar'), async (req, res) =
 
     const avatarPath = `/uploads/avatars/${req.file.filename}`;
     
-    const updatedUser = await User.findByIdAndUpdate(
-      user_id,
+    // Обновляем аватар пользователя в базе данных
+    const [updatedRowsCount] = await User.update(
       { avatar: avatarPath },
-      { new: true, select: '-password' }
+      { where: { id: parseInt(user_id) } }
     );
     
-    if (!updatedUser) {
+    if (updatedRowsCount === 0) {
       return res.status(404).json({ error: 'Пользователь не найден' });
     }
     
@@ -412,34 +605,42 @@ app.post('/api/upload/avatar', avatarUpload.single('avatar'), async (req, res) =
   }
 });
 
-// 获取用户信息
+// 获取用户信息，包含正确的头像路径
 app.get('/api/users/:id', async (req, res) => {
   try {
-    const user = await User.findById(req.params.id, { password: 0 });
+    const user = await User.findByPk(req.params.id, {
+      attributes: { exclude: ['password'] }
+    });
     
     if (!user) {
       return res.status(404).json({ error: 'Пользователь не найден' });
     }
     
+    // 确保返回正确的头像路径
+    const userData = {
+      ...user.toJSON(),
+      avatar: user.avatar ? user.avatar : null
+    };
+    
     logger.info(`获取用户信息成功: ID ${req.params.id}`);
-    res.json(user);
+    res.json(userData);
   } catch (error) {
     logger.error('获取用户信息错误:', error.message);
     res.status(500).json({ error: '获取用户信息失败' });
   }
 });
 
-// API路由 - 作品集管理
+// API路由 - 作品集管理（修复核心功能）
 app.get('/api/portfolio/:user_id', async (req, res) => {
   try {
     const { user_id } = req.params;
     
-    if (!user_id) {
+    if (!user_id || isNaN(parseInt(user_id))) {
       return res.status(400).json({ error: 'Некорректный ID пользователя' });
     }
 
     // 检查用户是否存在且是执行者
-    const user = await User.findById(user_id);
+    const user = await User.findByPk(parseInt(user_id));
     if (!user) {
       return res.status(404).json({ error: 'Пользователь не найден' });
     }
@@ -448,8 +649,11 @@ app.get('/api/portfolio/:user_id', async (req, res) => {
       return res.status(403).json({ error: 'Портфолио доступно только для исполнителей' });
     }
 
-    const portfolio = await Portfolio.find({ user_id })
-      .sort({ created_date: -1 });
+    const portfolio = await Portfolio.findAll({
+      where: { user_id: parseInt(user_id) },
+      order: [['created_date', 'DESC']],
+      raw: true
+    });
     
     logger.info(`获取作品集成功: 用户 ${user_id}, ${portfolio.length} 张图片`);
     res.json(portfolio);
@@ -463,7 +667,7 @@ app.post('/api/portfolio', portfolioUpload.array('images', 20), async (req, res)
   try {
     const { user_id } = req.body;
     
-    if (!user_id) {
+    if (!user_id || isNaN(parseInt(user_id))) {
       return res.status(400).json({ error: 'Некорректный ID пользователя' });
     }
 
@@ -472,24 +676,27 @@ app.post('/api/portfolio', portfolioUpload.array('images', 20), async (req, res)
     }
 
     // 检查用户权限
-    const user = await User.findById(user_id);
+    const user = await User.findByPk(parseInt(user_id));
     if (!user || user.role !== 'executor') {
       return res.status(403).json({ error: 'Только исполнители могут загружать работы в портфолио' });
     }
 
-    // 检查当前数量
-    const currentPortfolioCount = await Portfolio.countDocuments({ user_id });
+    // 检查текущее количество изображений в портфолио
+    const currentPortfolioCount = await Portfolio.count({
+      where: { user_id: parseInt(user_id) }
+    });
+
     if (currentPortfolioCount + req.files.length > 20) {
       return res.status(400).json({ error: 'Максимум 20 изображений в портфолио' });
     }
 
-    // 创建作品集记录
+    // Создаем записи в базе данных для каждого загруженного файла
     const portfolioEntries = req.files.map(file => ({
-      user_id,
+      user_id: parseInt(user_id),
       image_path: `/uploads/portfolio/${file.filename}`
     }));
 
-    const createdEntries = await Portfolio.insertMany(portfolioEntries);
+    const createdEntries = await Portfolio.bulkCreate(portfolioEntries);
     
     logger.info(`作品集图片上传成功: 用户 ${user_id}, ${req.files.length} 张图片`);
     res.status(201).json({
@@ -508,16 +715,16 @@ app.delete('/api/portfolio/:image_id', async (req, res) => {
   try {
     const { image_id } = req.params;
     
-    if (!image_id) {
+    if (!image_id || isNaN(parseInt(image_id))) {
       return res.status(400).json({ error: 'Некорректный ID изображения' });
     }
 
-    const portfolioItem = await Portfolio.findById(image_id);
+    const portfolioItem = await Portfolio.findByPk(parseInt(image_id));
     if (!portfolioItem) {
       return res.status(404).json({ error: 'Изображение не найдено' });
     }
 
-    // 删除文件
+    // 删除文件系统中的文件
     const imagePath = path.join(publicPath, portfolioItem.image_path);
     if (fs.existsSync(imagePath)) {
       try {
@@ -528,8 +735,10 @@ app.delete('/api/portfolio/:image_id', async (req, res) => {
       }
     }
 
-    // 从数据库删除
-    await Portfolio.findByIdAndDelete(image_id);
+    // 从数据库删除记录
+    await Portfolio.destroy({
+      where: { id: parseInt(image_id) }
+    });
     
     logger.info(`作品集图片删除成功: ID ${image_id}`);
     res.json({
@@ -546,26 +755,56 @@ app.delete('/api/portfolio/:image_id', async (req, res) => {
 app.get('/api/orders', async (req, res) => {
   try {
     const { user_id, role, admin, search, status } = req.query;
-    let query = {};
+    let whereClause = {};
     
     if (!admin && user_id) {
-      query.user_id = user_id;
+      whereClause.user_id = user_id;
     }
     
     if (search) {
-      query._id = search;
+      whereClause.id = search;
     }
     
     if (status) {
-      query.status = status;
+      whereClause.status = status;
     }
 
-    const orders = await Order.find(query)
-      .populate('user_id', 'username')
-      .sort({ created_date: -1 });
+    const orders = await Order.findAll({
+      where: whereClause,
+      include: [
+        {
+          model: User,
+          attributes: ['id', 'username'],
+          required: false
+        }
+      ],
+      order: [['created_date', 'DESC']]
+    });
 
-    logger.info(`获取订单列表: ${orders.length} 条记录`);
-    res.json(orders);
+    const processedOrders = orders.map(order => {
+      const orderData = order.toJSON();
+      
+      if (orderData.products) {
+        try {
+          orderData.products = JSON.parse(orderData.products);
+        } catch (e) {
+          orderData.products = [];
+        }
+      }
+      
+      if (orderData.assigned_executors) {
+        try {
+          orderData.assigned_executors = JSON.parse(orderData.assigned_executors);
+        } catch (e) {
+          orderData.assigned_executors = [];
+        }
+      }
+      
+      return orderData;
+    });
+    
+    logger.info(`获取订单列表: ${processedOrders.length} 条记录`);
+    res.json(processedOrders);
   } catch (error) {
     logger.error('获取订单列表错误:', error.message);
     res.status(500).json({ error: '获取订单列表失败' });
@@ -582,15 +821,13 @@ app.post('/api/orders', async (req, res) => {
 
     const order = await Order.create({
       user_id,
-      products,
+      products: JSON.stringify(products),
       total_price,
       notes: notes || '',
       status: 'создан заказ'
     });
     
-    await order.populate('user_id', 'username');
-    
-    logger.info(`创建订单: ID ${order._id}, 用户 ${user_id}`);
+    logger.info(`创建订单: ID ${order.id}, 用户 ${user_id}`);
     res.status(201).json(order);
   } catch (error) {
     logger.error('创建订单错误:', error.message);
@@ -598,21 +835,34 @@ app.post('/api/orders', async (req, res) => {
   }
 });
 
-// 订单状态更新
+// 修复订单状态更新
 app.put('/api/orders/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const updateData = { ...req.body, updated_date: new Date() };
+    const updateData = req.body;
     
-    const updatedOrder = await Order.findByIdAndUpdate(
-      id,
-      updateData,
-      { new: true }
-    ).populate('user_id', 'username');
+    // 处理 assigned_executors 字段
+    if (updateData.assigned_executors && typeof updateData.assigned_executors !== 'string') {
+      updateData.assigned_executors = JSON.stringify(updateData.assigned_executors);
+    }
     
-    if (!updatedOrder) {
+    const [updatedRowsCount] = await Order.update(updateData, {
+      where: { id: parseInt(id) }
+    });
+    
+    if (updatedRowsCount === 0) {
       return res.status(404).json({ error: 'Заказ не найден' });
     }
+    
+    const updatedOrder = await Order.findByPk(id, {
+      include: [
+        {
+          model: User,
+          attributes: ['id', 'username'],
+          required: false
+        }
+      ]
+    });
     
     logger.info(`订单状态更新成功: ID ${id}`);
     res.json(updatedOrder);
@@ -631,9 +881,17 @@ app.get('/api/settings', async (req, res) => {
       settings = await Settings.create({
         payment_info: 'Реквизиты для оплаты:\nБанковская карта: 1234 5678 9012 3456\nЯндекс.Деньги: 410011234567890\nQIWI: +79001234567',
         price_coefficient: 5.25,
-        discount_rules: [],
+        discount_rules: '[]',
         show_discount_on_products: false
       });
+    }
+    
+    if (settings.discount_rules) {
+      try {
+        settings.discount_rules = JSON.parse(settings.discount_rules);
+      } catch (e) {
+        settings.discount_rules = [];
+      }
     }
     
     logger.info('获取系统设置成功');
@@ -653,12 +911,12 @@ app.put('/api/settings', async (req, res) => {
     const updateData = {
       payment_info: payment_info || '',
       price_coefficient: parseFloat(price_coefficient) || 5.25,
-      discount_rules: discount_rules || [],
+      discount_rules: JSON.stringify(discount_rules || []),
       show_discount_on_products: Boolean(show_discount_on_products)
     };
     
     if (settings) {
-      settings = await Settings.findOneAndUpdate({}, updateData, { new: true });
+      await settings.update(updateData);
     } else {
       settings = await Settings.create(updateData);
     }
@@ -675,46 +933,68 @@ app.put('/api/settings', async (req, res) => {
 app.get('/api/products', async (req, res) => {
   try {
     const { search, filter, admin } = req.query;
-    let query = {};
+    const whereClause = {};
     
-    if (!admin) query.is_visible = true;
+    if (!admin) whereClause.is_visible = true;
     
     if (search) {
+      const searchTerm = `%${search}%`;
       if (filter === 'description') {
-        query.description = { $regex: search, $options: 'i' };
+        whereClause.description = { [Op.iLike]: searchTerm };
       } else if (filter === 'id') {
-        query._id = search;
+        whereClause.id = search;
       } else {
-        query.name = { $regex: search, $options: 'i' };
+        whereClause.name = { [Op.iLike]: searchTerm };
       }
     }
 
-    const products = await Product.find(query)
-      .sort({ created_date: -1 });
+    const products = await Product.findAll({
+      where: whereClause,
+      order: [['created_date', 'DESC']],
+      raw: true
+    });
 
     const settings = await Settings.findOne();
     const priceCoefficient = settings ? settings.price_coefficient : 5.25;
 
     const processedProducts = products.map(product => {
-      const productObj = product.toObject();
-      
-      if (productObj.price_options && Array.isArray(productObj.price_options)) {
-        productObj.price_options = productObj.price_options.map(option => {
-          const processedOption = { ...option };
+      if (product.price_options) {
+        try {
+          let priceOptions = JSON.parse(product.price_options);
           
-          if (admin !== 'true') {
-            delete processedOption.resin_ml;
-          }
+          priceOptions = priceOptions.map(option => {
+            const processedOption = { ...option };
+            
+            if (admin !== 'true') {
+              delete processedOption.resin_ml;
+            }
+            
+            if (processedOption.price) {
+              processedOption.price = Math.round((processedOption.price / 5.25) * priceCoefficient);
+            }
+            
+            return processedOption;
+          });
           
-          if (processedOption.price) {
-            processedOption.price = Math.round((processedOption.price / 5.25) * priceCoefficient);
-          }
-          
-          return processedOption;
-        });
+          product.price_options = priceOptions;
+        } catch (e) {
+          product.price_options = [];
+        }
+      } else {
+        product.price_options = [];
       }
       
-      return productObj;
+      if (product.additional_images) {
+        try {
+          product.additional_images = JSON.parse(product.additional_images);
+        } catch (e) {
+          product.additional_images = [];
+        }
+      } else {
+        product.additional_images = [];
+      }
+      
+      return product;
     });
     
     logger.info(`获取商品列表: ${processedProducts.length} 条记录`);
@@ -725,7 +1005,7 @@ app.get('/api/products', async (req, res) => {
   }
 });
 
-// 商品添加
+// 修复商品添加
 app.post('/api/products', upload.fields([
   { name: 'main_image', maxCount: 1 },
   { name: 'additional_images', maxCount: 4 }
@@ -733,6 +1013,7 @@ app.post('/api/products', upload.fields([
   try {
     const { name, related_name, description, original_height, original_width, original_length, parts_count, price_options, is_visible } = req.body;
     
+    // 验证必填字段
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Название товара обязательно' });
     }
@@ -773,14 +1054,14 @@ app.post('/api/products', upload.fields([
       original_length: original_length ? parseFloat(original_length) : null,
       parts_count: parts_count ? parseInt(parts_count) : 1,
       main_image: mainImagePath,
-      additional_images: additionalImages,
-      price_options: parsedPriceOptions,
+      additional_images: JSON.stringify(additionalImages),
+      price_options: JSON.stringify(parsedPriceOptions),
       is_visible: is_visible !== undefined ? Boolean(is_visible) : true
     };
 
     const product = await Product.create(productData);
     
-    logger.info(`商品创建成功: ID ${product._id}, 名称 ${product.name}`);
+    logger.info(`商品创建成功: ID ${product.id}, 名称 ${product.name}`);
     res.status(201).json(product);
   } catch (error) {
     logger.error('创建商品错误:', error.message);
@@ -788,25 +1069,29 @@ app.post('/api/products', upload.fields([
   }
 });
 
-// 商品删除
+// 修复商品删除
 app.delete('/api/products/:id', async (req, res) => {
   try {
     const { id } = req.params;
     
-    if (!id) {
+    if (!id || isNaN(parseInt(id))) {
       return res.status(400).json({ error: 'Некорректный ID товара' });
     }
 
-    const product = await Product.findById(id);
+    const product = await Product.findByPk(parseInt(id));
     if (!product) {
       return res.status(404).json({ error: 'Товар не найден' });
     }
 
     // 删除商品相关的收藏记录
-    await UserFavorite.deleteMany({ product_id: id });
+    await UserFavorite.destroy({
+      where: { product_id: parseInt(id) }
+    });
 
     // 删除商品
-    await Product.findByIdAndDelete(id);
+    await Product.destroy({
+      where: { id: parseInt(id) }
+    });
     
     logger.info(`商品删除成功: ID ${id}`);
     res.json({ 
@@ -829,24 +1114,24 @@ app.post('/api/favorites/toggle', async (req, res) => {
     }
 
     const existingFavorite = await UserFavorite.findOne({
-      user_id, product_id
+      where: { user_id, product_id }
     });
 
     let is_favorite = false;
 
     if (existingFavorite) {
-      await UserFavorite.findByIdAndDelete(existingFavorite._id);
+      await existingFavorite.destroy();
       
-      await Product.findByIdAndUpdate(product_id, {
-        $inc: { favorites_count: -1 }
+      await Product.decrement('favorites_count', {
+        where: { id: product_id }
       });
       
       is_favorite = false;
     } else {
       await UserFavorite.create({ user_id, product_id });
       
-      await Product.findByIdAndUpdate(product_id, {
-        $inc: { favorites_count: 1 }
+      await Product.increment('favorites_count', {
+        where: { id: product_id }
       });
       
       is_favorite = true;
@@ -864,10 +1149,37 @@ app.get('/api/favorites/:user_id', async (req, res) => {
   try {
     const { user_id } = req.params;
     
-    const favorites = await UserFavorite.find({ user_id })
-      .populate('product_id');
+    const favorites = await UserFavorite.findAll({
+      where: { user_id },
+      include: [
+        {
+          model: Product,
+          required: true
+        }
+      ]
+    });
 
-    const favoriteProducts = favorites.map(fav => fav.product_id);
+    const favoriteProducts = favorites.map(fav => {
+      const product = fav.Product.toJSON();
+      
+      if (product.price_options) {
+        try {
+          product.price_options = JSON.parse(product.price_options);
+        } catch (e) {
+          product.price_options = [];
+        }
+      }
+      
+      if (product.additional_images) {
+        try {
+          product.additional_images = JSON.parse(product.additional_images);
+        } catch (e) {
+          product.additional_images = [];
+        }
+      }
+      
+      return product;
+    });
     
     logger.info(`获取用户 ${user_id} 的收藏列表: ${favoriteProducts.length} 条记录`);
     res.json(favoriteProducts);
@@ -877,7 +1189,7 @@ app.get('/api/favorites/:user_id', async (req, res) => {
   }
 });
 
-// API路由 - 聊天功能
+// API路由 - 聊天功能（修复排序）
 app.get('/api/chat/messages', async (req, res) => {
   try {
     const { user_id, with_user_id, limit = 100 } = req.query;
@@ -886,27 +1198,35 @@ app.get('/api/chat/messages', async (req, res) => {
       return res.status(400).json({ error: '缺少必要参数' });
     }
 
-    const messages = await ChatMessage.find({
-      $or: [
-        { from_user_id: user_id, to_user_id: with_user_id },
-        { from_user_id: with_user_id, to_user_id: user_id }
-      ]
-    })
-    .populate('from_user_id', 'username')
-    .sort({ created_date: -1 })
-    .limit(parseInt(limit));
+    const messages = await ChatMessage.findAll({
+      where: {
+        [Op.or]: [
+          { from_user_id: user_id, to_user_id: with_user_id },
+          { from_user_id: with_user_id, to_user_id: user_id }
+        ]
+      },
+      include: [
+        {
+          model: User,
+          as: 'FromUser',
+          attributes: ['id', 'username']
+        }
+      ],
+      order: [['created_date', 'DESC']], // 修复：按最新消息排序
+      limit: parseInt(limit)
+    });
 
     const processedMessages = messages.map(msg => {
-      const msgData = msg.toObject();
+      const msgData = msg.toJSON();
       return {
-        id: msgData._id,
+        id: msgData.id,
         content: msgData.message,
-        sender_id: msgData.from_user_id._id,
+        sender_id: msgData.from_user_id,
         receiver_id: msgData.to_user_id,
-        sender_name: msgData.from_user_id.username,
+        sender_name: msgData.FromUser ? msgData.FromUser.username : 'Unknown',
         created_at: msgData.created_date
       };
-    }).reverse();
+    }).reverse(); // 反转以获得正确的时间顺序用于显示
     
     logger.info(`获取聊天消息: 用户 ${user_id} 与 ${with_user_id}, ${processedMessages.length} 条消息`);
     res.json(processedMessages);
@@ -930,14 +1250,16 @@ app.post('/api/chat', async (req, res) => {
       message: message.trim()
     });
     
-    await chatMessage.populate('from_user_id', 'username');
+    const fromUser = await User.findByPk(from_user_id, {
+      attributes: ['id', 'username']
+    });
     
     const responseData = {
-      id: chatMessage._id,
+      id: chatMessage.id,
       message: chatMessage.message,
-      from_user_id: chatMessage.from_user_id._id,
+      from_user_id: chatMessage.from_user_id,
       to_user_id: chatMessage.to_user_id,
-      from_username: chatMessage.from_user_id.username,
+      from_username: fromUser ? fromUser.username : 'Unknown',
       created_date: chatMessage.created_date
     };
     
@@ -949,7 +1271,7 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
-// 邮件广播API
+// 修复邮件广播API
 app.post('/api/chat/broadcast', async (req, res) => {
   try {
     const { message, from_user_id } = req.body;
@@ -963,22 +1285,25 @@ app.post('/api/chat/broadcast', async (req, res) => {
     }
 
     // 获取所有用户（除了发送者）
-    const users = await User.find({
-      _id: { $ne: from_user_id }
-    }, 'id username');
+    const users = await User.findAll({
+      where: {
+        id: { [Op.ne]: from_user_id }
+      },
+      attributes: ['id', 'username']
+    });
 
     if (users.length === 0) {
       return res.status(404).json({ error: 'Нет пользователей для рассылки' });
     }
 
-    // 创建广播消息
+    // 创建广播消息给所有用户
     const broadcastMessages = users.map(user => ({
-      from_user_id,
-      to_user_id: user._id,
+      from_user_id: parseInt(from_user_id),
+      to_user_id: user.id,
       message: message.trim()
     }));
 
-    await ChatMessage.insertMany(broadcastMessages);
+    await ChatMessage.bulkCreate(broadcastMessages);
     
     logger.info(`广播消息发送成功: 从用户 ${from_user_id} 到 ${users.length} 个用户`);
     res.status(201).json({
@@ -1011,12 +1336,12 @@ app.post('/api/register', async (req, res) => {
       return res.status(400).json({ error: 'Имя пользователя должно содержать от 3 до 50 символов' });
     }
 
-    const existingUser = await User.findOne({ username: cleanUsername });
+    const existingUser = await User.findOne({ where: { username: cleanUsername } });
     if (existingUser) {
       return res.status(400).json({ error: 'Пользователь с таким именем уже существует' });
     }
 
-    const userCount = await User.countDocuments();
+    const userCount = await User.count();
     const isFirstUser = userCount === 0;
 
     const hashedPassword = bcrypt.hashSync(password, 10);
@@ -1030,16 +1355,20 @@ app.post('/api/register', async (req, res) => {
       initial_username: cleanUsername
     };
 
+    if (isFirstUser) {
+      userData.id = 1;
+    }
+
     const user = await User.create(userData);
     
     const userResponse = {
-      id: user._id,
+      id: user.id,
       username: user.username,
       role: user.role,
       registration_date: user.registration_date
     };
     
-    logger.info(`用户注册成功: ID ${user._id}, username: ${user.username}, role: ${user.role}${isFirstUser ? ' (首个管理员)' : ''}`);
+    logger.info(`用户注册成功: ID ${user.id}, username: ${user.username}, role: ${user.role}${isFirstUser ? ' (首个管理员)' : ''}`);
     
     res.status(201).json({ 
       message: `Пользователь успешно зарегистрирован${isFirstUser ? ' как администратор' : ''}`,
@@ -1049,8 +1378,13 @@ app.post('/api/register', async (req, res) => {
   } catch (error) {
     logger.error('用户注册错误:', error.message);
     
-    if (error.code === 11000) {
+    if (error.name === 'SequelizeUniqueConstraintError') {
       return res.status(400).json({ error: 'Пользователь с таким именем уже существует' });
+    }
+    
+    if (error.name === 'SequelizeValidationError') {
+      const validationErrors = error.errors.map(err => err.message);
+      return res.status(400).json({ error: `Ошибка валидации: ${validationErrors.join(', ')}` });
     }
     
     res.status(500).json({ error: 'Произошла ошибка при регистрации пользователя' });
@@ -1065,7 +1399,10 @@ app.post('/api/login', async (req, res) => {
       return res.status(400).json({ error: 'Имя пользователя и пароль обязательны' });
     }
 
-    const user = await User.findOne({ username: username.trim() });
+    const user = await User.findOne({ 
+      where: { username: username.trim() },
+      raw: true
+    });
 
     if (!user) {
       return res.status(404).json({ error: 'Пользователь не найден' });
@@ -1076,13 +1413,12 @@ app.post('/api/login', async (req, res) => {
       return res.status(401).json({ error: 'Неверный пароль' });
     }
 
-    const userResponse = user.toObject();
-    delete userResponse.password;
+    const { password: userPassword, ...userInfo } = user;
     
-    logger.info(`用户登录成功: ${user.username} (ID: ${user._id})`);
+    logger.info(`用户登录成功: ${user.username} (ID: ${user.id})`);
     res.status(200).json({
       message: 'Вход выполнен успешно',
-      user: userResponse
+      user: userInfo
     });
 
   } catch (error) {
@@ -1095,15 +1431,23 @@ app.post('/api/login', async (req, res) => {
 app.get('/api/custom-requests', async (req, res) => {
   try {
     const { user_id, role } = req.query;
-    let query = {};
+    let whereClause = {};
     
     if (role !== 'admin' && user_id) {
-      query.user_id = user_id;
+      whereClause.user_id = user_id;
     }
 
-    const requests = await CustomRequest.find(query)
-      .populate('user_id', 'username')
-      .sort({ created_date: -1 });
+    const requests = await CustomRequest.findAll({
+      where: whereClause,
+      include: [
+        {
+          model: User,
+          attributes: ['id', 'username'],
+          required: false
+        }
+      ],
+      order: [['created_date', 'DESC']]
+    });
     
     logger.info(`获取自定义请求列表: ${requests.length} 条记录`);
     res.json(requests);
@@ -1128,20 +1472,19 @@ app.post('/api/custom-requests', upload.array('images', 3), async (req, res) => 
     }
 
     const requestData = {
-      user_id,
+      user_id: parseInt(user_id),
       product_name: product_name.trim(),
       additional_name: additional_name ? additional_name.trim() : null,
-      product_id: product_id || null,
-      model_links: model_links ? model_links.split(',') : [],
-      required_heights: required_heights ? required_heights.split(',') : [],
-      images,
+      product_id: product_id ? parseInt(product_id) : null,
+      model_links: model_links || null,
+      required_heights: required_heights || null,
+      images: images.length > 0 ? JSON.stringify(images) : null,
       status: 'в обработке'
     };
 
     const customRequest = await CustomRequest.create(requestData);
-    await customRequest.populate('user_id', 'username');
     
-    logger.info(`创建自定义请求成功: ID ${customRequest._id}, 用户 ${user_id}`);
+    logger.info(`创建自定义请求成功: ID ${customRequest.id}, 用户 ${user_id}`);
     res.status(201).json(customRequest);
   } catch (error) {
     logger.error('创建自定义请求错误:', error.message);
@@ -1149,28 +1492,41 @@ app.post('/api/custom-requests', upload.array('images', 3), async (req, res) => 
   }
 });
 
-// 测量申请状态更新
+// 修复测量申请状态更新
 app.put('/api/custom-requests/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const updateData = { ...req.body, updated_date: new Date() };
+    const updateData = req.body;
     
-    if (!id) {
+    if (!id || isNaN(parseInt(id))) {
       return res.status(400).json({ error: 'Некорректный ID заявки' });
     }
 
-    const customRequest = await CustomRequest.findByIdAndUpdate(
-      id,
-      updateData,
-      { new: true }
-    ).populate('user_id', 'username');
-    
+    const customRequest = await CustomRequest.findByPk(parseInt(id));
     if (!customRequest) {
       return res.status(404).json({ error: 'Заявка не найдена' });
     }
+
+    const [updatedRowsCount] = await CustomRequest.update(updateData, {
+      where: { id: parseInt(id) }
+    });
+    
+    if (updatedRowsCount === 0) {
+      return res.status(404).json({ error: 'Заявка не найдена или не обновлена' });
+    }
+    
+    const updatedRequest = await CustomRequest.findByPk(parseInt(id), {
+      include: [
+        {
+          model: User,
+          attributes: ['id', 'username'],
+          required: false
+        }
+      ]
+    });
     
     logger.info(`测量申请状态更新成功: ID ${id}`);
-    res.json(customRequest);
+    res.json(updatedRequest);
   } catch (error) {
     logger.error('测量申请状态更新错误:', error.message);
     res.status(500).json({ error: 'Ошибка при обновлении статуса заявки' });
@@ -1206,4 +1562,9 @@ app.use((req, res) => {
 app.use((err, req, res, next) => {
   logger.error('全局错误:', err.message);
   res.status(500).json({ error: '服务器内部错误' });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  logger.info(`服务器启动成功，端口: ${PORT}`);
 });
